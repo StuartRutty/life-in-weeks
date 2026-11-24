@@ -73,7 +73,7 @@
       <div class="sub">Every week of a life, as a grid. Periods are chapters; milestones are moments.</div>
     </div>
     <div class="row">
-      <button id="sideBtn" title="Collapse the sidebar">Hide panel</button>
+      <button id="sideBtn" title="Collapse the sidebar" aria-expanded="true">Hide panel</button>
       <button id="themeBtn" title="Toggle dark mode">◐ Theme</button>
     </div>
   </header>
@@ -88,8 +88,8 @@
         <input type="date" id="dob">
         <label for="expectancy">Expected lifespan (years)</label>
         <div class="row" style="margin-bottom:8px">
-          <button id="modeManual" class="primary" style="flex:1">Manual</button>
-          <button id="modeLife" style="flex:1">From lifestyle</button>
+          <button id="modeManual" class="primary" aria-pressed="true" style="flex:1">Manual</button>
+          <button id="modeLife" aria-pressed="false" style="flex:1">From lifestyle</button>
         </div>
         <input type="number" id="expectancy" min="1" max="130" step="1">
         <div id="lifePanel" style="display:none">
@@ -104,7 +104,7 @@
           </select>
           <div id="factors"></div>
           <div class="hint" id="lifeSummary" style="font-weight:600;color:var(--ink)"></div>
-          <div class="hint">Deltas are approximate pooled estimates from large cohort studies and meta-analyses. A few — income, education — are associations, not proven causes, and every one carries wide uncertainty. A teaching model, not a prediction about you. Toggle the factors and watch the grid breathe.</div>
+          <div class="hint">Deltas are approximate pooled estimates from large cohort studies and meta-analyses. Two overlapping pairs are capped rather than summed: exercise + strength (max +3 yrs) and social ties + partnership (max +2 yrs). A few — income, education — are associations, not proven causes, and every one carries wide uncertainty. A teaching model, not a prediction about you. Toggle the factors and watch the grid breathe.</div>
         </div>
         <div class="hint" id="manualHint">The grid runs from birth to this age. Set it from family history, actuarial tables, or a goal.</div>
       </div>
@@ -139,7 +139,7 @@
     <div class="panel gridwrap">
       <div id="gridEmpty" class="empty" style="display:none">Enter your date of birth to draw your grid.</div>
       <canvas id="grid" tabindex="0" role="img" aria-label="Life in weeks grid. Use the arrow keys to inspect individual weeks."></canvas>
-      <div id="tip"></div>
+      <div id="tip" role="status" aria-live="polite"></div>
       <div class="legend" id="legend"></div>
       <div class="hint" id="overlapNote" style="display:none;color:var(--danger)">Some periods overlap — where they do, the one later in the list draws on top.</div>
     </div>
@@ -195,24 +195,53 @@ const DEFAULT_HABITS = {smoking:"never", exercise:"some", strength:"none", diet:
    or be persisted. Non-object entries are dropped, fields are coerced to
    strings, colours are validated, habit values are checked against the
    factor options. Returns null only when the input is not an object. */
+const DATE_KEYS = new Set(["start", "end", "date"]);
+const SCHEMA_KEYS = ["dob", "expectancy", "mode", "baseline", "sex", "habits", "periods", "milestones"];
+const MAX_WEEKS = Math.ceil(130 * 365.25 / 7);
 function safeColor(c){ return /^#[0-9a-f]{6}$/i.test(c || "") ? c : "#888888"; }
+function makeUTCDate(y, m, d){
+  const dt = new Date(0);
+  dt.setUTCFullYear(y, m, d);
+  return dt;
+}
+function safeDate(s){
+  if(typeof s !== "string") return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if(!m) return "";
+  const y = +m[1], mo = +m[2], d = +m[3];
+  const dt = makeUTCDate(y, mo - 1, d);
+  if(dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return "";
+  return s;
+}
+function clampNum(v, min, max, fallback){
+  if(v === null || v === undefined || typeof v === "boolean") return fallback;
+  if(typeof v === "string" && v.trim() === "") return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
+}
 function cleanItem(it, keys){
   if(!it || typeof it !== "object" || Array.isArray(it)) return null;
   const o = {};
-  for(const k of keys) o[k] = typeof it[k] === "string" ? it[k] : "";
+  for(const k of keys){
+    const v = typeof it[k] === "string" ? it[k] : "";
+    o[k] = DATE_KEYS.has(k) ? safeDate(v) : v;
+  }
   o.color = safeColor(it.color);
   return o;
 }
 function cleanState(s){
   if(!s || typeof s !== "object" || Array.isArray(s)) return null;
-  const habits = Object.assign({}, DEFAULT_HABITS,
-    (s.habits && typeof s.habits === "object" && !Array.isArray(s.habits)) ? s.habits : {});
-  for(const f of FACTORS) if(!f.options.some(o => o[0] === habits[f.key])) habits[f.key] = DEFAULT_HABITS[f.key];
+  const rawHabits = (s.habits && typeof s.habits === "object" && !Array.isArray(s.habits)) ? s.habits : null;
+  const habits = {};
+  for(const f of FACTORS){
+    const val = rawHabits && Object.hasOwn(rawHabits, f.key) ? rawHabits[f.key] : undefined;
+    habits[f.key] = f.options.some(o => o[0] === val) ? val : DEFAULT_HABITS[f.key];
+  }
   return {
-    dob: typeof s.dob === "string" ? s.dob : "",
-    expectancy: +s.expectancy || 80,
+    dob: safeDate(s.dob),
+    expectancy: clampNum(s.expectancy, 1, 130, 80),
     mode: s.mode === "lifestyle" ? "lifestyle" : "manual",
-    baseline: +s.baseline || 79,
+    baseline: clampNum(s.baseline, 40, 110, 79),
     sex: ["avg", "female", "male"].includes(s.sex) ? s.sex : "avg",
     habits,
     periods: (Array.isArray(s.periods) ? s.periods : []).map(p => cleanItem(p, ["name", "start", "end"])).filter(Boolean),
@@ -231,7 +260,7 @@ function optionDelta(f, val){
   const o = f.options.find(o => o[0] === val) || f.options[0];
   return o[2];
 }
-function habitDelta(){
+function habitBreakdown(){
   // Two pairs share one underlying effect, so their combined positive credit
   // is capped rather than summed: aerobic + strength (the joint effect is
   // sub-additive) and social ties + partnership (partnership is one component
@@ -240,30 +269,46 @@ function habitDelta(){
   for(const f of FACTORS) byKey[f.key] = optionDelta(f, state.habits[f.key]);
   let t = 0;
   for(const k in byKey) t += byKey[k];
+  let capped = 0;
   const exPair = byKey.exercise + byKey.strength;
-  if(exPair > 3) t -= exPair - 3;
+  if(exPair > 3){ capped += exPair - 3; t -= exPair - 3; }
   const socPair = byKey.social + byKey.partnership;
-  if(socPair > 2) t -= socPair - 2;
-  return t;
+  if(socPair > 2){ capped += socPair - 2; t -= socPair - 2; }
+  return { total: t, capped };
 }
+function habitDelta(){ return habitBreakdown().total; }
 function sexAdjust(){
   // US 2024 life expectancy at birth: 76.5 male / 81.4 female vs 79.0 all-sex.
   return state.sex === "female" ? 2.4 : state.sex === "male" ? -2.5 : 0;
 }
+function calendarAge(dob, dt){
+  if(!dob || !dt || dt < dob) return { years: 0, weeks: 0 };
+  const by = dob.getUTCFullYear(), bm = dob.getUTCMonth(), bd = dob.getUTCDate();
+  let years = dt.getUTCFullYear() - by;
+  const m = dt.getUTCMonth() - bm;
+  if(m < 0 || (m === 0 && dt.getUTCDate() < bd)) years--;
+  years = Math.max(0, years);
+  const lastBday = makeUTCDate(by + years, bm, bd);
+  const days = Math.max(0, Math.round((dt - lastBday) / DAY));
+  return { years, weeks: Math.floor(days / 7) };
+}
 function currentAgeYears(){
   const dob = parseDate(state.dob); if(!dob) return 0;
-  const now = new Date();
-  let a = now.getFullYear() - dob.getFullYear();
-  const m = now.getMonth() - dob.getMonth();
-  if(m < 0 || (m === 0 && now.getDate() < dob.getDate())) a--;
-  return Math.max(0, a);
+  return calendarAge(dob, todayDate()).years;
 }
 function effectiveExpectancy(){
   let e;
-  if(state.mode === "lifestyle") e = (+state.baseline || 79) + sexAdjust() + habitDelta();
-  else e = +state.expectancy || 80;
+  if(state.mode === "lifestyle") e = clampNum(state.baseline, 40, 110, 79) + sexAdjust() + habitDelta();
+  else e = clampNum(state.expectancy, 1, 130, 80);
   e = Math.max(e, currentAgeYears() + 1); // both modes: the grid never ends before the life already lived
   return Math.max(1, Math.min(130, e));
+}
+function totalWeeks(exp, todayW){
+  let total = Math.max(1, Math.ceil(exp * 365.25 / 7));
+  if(typeof todayW === "number" && todayW >= 0 && todayW < MAX_WEEKS){
+    total = Math.max(total, todayW + 1);
+  }
+  return Math.min(MAX_WEEKS, total);
 }
 
 function load(){
@@ -281,8 +326,16 @@ function save(){
     const n = document.getElementById("saveNote"); if(n) n.style.display = "block";
   }
 }
-function parseDate(s){ if(!s) return null; const d = new Date(s + "T12:00:00"); return isNaN(d) ? null : d; }
-function fmtDate(d){ return d.toLocaleDateString(undefined,{year:"numeric",month:"short",day:"numeric"}); }
+function parseDate(s){
+  const valid = safeDate(s);
+  if(!valid) return null;
+  return makeUTCDate(+valid.slice(0, 4), +valid.slice(5, 7) - 1, +valid.slice(8, 10));
+}
+function todayDate(){
+  const n = new Date();
+  return makeUTCDate(n.getFullYear(), n.getMonth(), n.getDate());
+}
+function fmtDate(d){ return d.toLocaleDateString(undefined,{timeZone:"UTC",year:"numeric",month:"short",day:"numeric"}); }
 function weekIndex(dob, d){ return Math.floor((d - dob) / DAY / 7); }
 
 /* ---------- derived data ---------- */
@@ -295,18 +348,21 @@ function derive(){
   const dob = parseDate(state.dob);
   if(!dob) return null;
   const exp = effectiveExpectancy();
-  const end = new Date(dob.getTime() + exp * 365.25 * DAY);
-  const total = Math.max(1, weekIndex(dob, end));
-  const todayW = weekIndex(dob, new Date());
+  const today = todayDate();
+  const todayW = weekIndex(dob, today);
+  const total = totalWeeks(exp, todayW);
   const periodAt = new Array(total).fill(-1);
+  const periodBounds = new Array(state.periods.length).fill(null);
   let overlap = false;
   state.periods.forEach((p, i) => {
-    delete p._a; delete p._b;
     const s = parseDate(p.start), e = parseDate(p.end);
     if(!s || !e) return;
-    const a = Math.max(0, weekIndex(dob, s)), b = Math.min(total - 1, weekIndex(dob, e));
+    const rawA = weekIndex(dob, s), rawB = weekIndex(dob, e);
+    if(s > e){ periodBounds[i] = { rawA, rawB, a: 0, b: -1, status: "reversed" }; return; }
+    if(rawB < 0 || rawA >= total){ periodBounds[i] = { rawA, rawB, a: 0, b: -1, status: "oog" }; return; }
+    const a = Math.max(0, rawA), b = Math.min(total - 1, rawB);
     for(let w = a; w <= b; w++){ if(periodAt[w] !== -1 && periodAt[w] !== i) overlap = true; periodAt[w] = i; }
-    p._a = a; p._b = b;
+    periodBounds[i] = { rawA, rawB, a, b, status: "ok" };
   });
   const msAt = new Map();
   state.milestones.forEach(m => {
@@ -316,13 +372,13 @@ function derive(){
     if(!msAt.has(w)) msAt.set(w, []);
     msAt.get(w).push(m);
   });
-  return { dob, exp, total, todayW, periodAt, msAt, overlap };
+  return { dob, today, exp, total, todayW, periodAt, periodBounds, msAt, overlap };
 }
 
 /* ---------- rendering ---------- */
 const canvas = document.getElementById("grid"), ctx = canvas.getContext("2d");
 const tip = document.getElementById("tip");
-let geom = null;
+let geom = null, kbWeek = -1;
 
 function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 
@@ -332,9 +388,10 @@ function draw(){
   const overlapNote = document.getElementById("overlapNote");
   if(!d){ empty.style.display = "block"; canvas.style.display = "none";
     document.getElementById("summary").innerHTML = ""; document.getElementById("legend").innerHTML = "";
-    overlapNote.style.display = "none"; return; }
+    overlapNote.style.display = "none"; geom = null; kbWeek = -1; refreshOogHints(); return; }
   empty.style.display = "none"; canvas.style.display = "block";
   overlapNote.style.display = d.overlap ? "block" : "none";
+  if(kbWeek >= d.total) kbWeek = -1;
 
   const cols = 52, rows = Math.ceil(d.total / cols);
   const labelW = 24; // left margin for the decade age labels
@@ -345,7 +402,7 @@ function draw(){
   canvas.height = (cell * rows + gap * (rows - 1)) * dpr;
   canvas.style.aspectRatio = canvas.width + " / " + canvas.height;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  geom = { cell, gap, cols, rows, total: d.total, labelW };
+  geom = { cell, gap, cols, rows, total: d.total, labelW, dpr };
 
   const lived = cssVar("--cell-lived"), future = cssVar("--cell-future"),
         contrast = cssVar("--contrast"), accent = cssVar("--accent");
@@ -361,10 +418,13 @@ function draw(){
     ctx.fillStyle = pi >= 0 ? safeColor(state.periods[pi].color) : (w <= d.todayW ? lived : future);
     ctx.fillRect(x, y, cell, cell);
 
-    // period start / end: bold contrasting outline
-    if(pi >= 0 && (w === state.periods[pi]._a || w === state.periods[pi]._b)){
-      ctx.strokeStyle = contrast; ctx.lineWidth = Math.max(1.4, cell * 0.16);
-      ctx.strokeRect(x + ctx.lineWidth/2, y + ctx.lineWidth/2, cell - ctx.lineWidth, cell - ctx.lineWidth);
+    // period start / end: bold contrasting outline (only on true, unclipped boundaries)
+    if(pi >= 0){
+      const pb = d.periodBounds[pi];
+      if(pb && (w === pb.rawA || w === pb.rawB)){
+        ctx.strokeStyle = contrast; ctx.lineWidth = Math.max(1.4, cell * 0.16);
+        ctx.strokeRect(x + ctx.lineWidth/2, y + ctx.lineWidth/2, cell - ctx.lineWidth, cell - ctx.lineWidth);
+      }
     }
     // milestone: filled centre dot in its own colour
     if(d.msAt.has(w)){
@@ -380,11 +440,20 @@ function draw(){
       ctx.strokeRect(x + ctx.lineWidth/2, y + ctx.lineWidth/2, cell - ctx.lineWidth, cell - ctx.lineWidth);
     }
   }
+  // keyboard focus ring on the inspected week
+  if(kbWeek >= 0 && kbWeek < d.total && document.activeElement === canvas){
+    const fx = labelW + (kbWeek % cols) * (cell + gap), fy = Math.floor(kbWeek / cols) * (cell + gap);
+    const oy = fy === 0 ? 1 : fy - 0.5, oh = fy === 0 ? cell : cell + 1;
+    ctx.strokeStyle = cssVar("--panel"); ctx.lineWidth = 3;
+    ctx.strokeRect(fx - 0.5, oy, cell + 1, oh);
+    ctx.strokeStyle = contrast; ctx.lineWidth = 1.5;
+    ctx.strokeRect(fx - 0.5, oy, cell + 1, oh);
+  }
   const livedCount = Math.max(0, Math.min(d.total, d.todayW + 1));
   canvas.setAttribute("aria-label",
     "Grid of " + d.total.toLocaleString() + " weeks; " + livedCount.toLocaleString() +
     " lived so far. Use the arrow keys to inspect individual weeks.");
-  renderSummary(d); renderLegend(d);
+  renderSummary(d); renderLegend(d); refreshOogHints();
 }
 
 function renderSummary(d){
@@ -400,7 +469,10 @@ function renderSummary(d){
 function renderLegend(d){
   let h = '<span class="li"><span class="sw" style="background:var(--cell-lived)"></span>Lived</span>' +
           '<span class="li"><span class="sw" style="background:var(--cell-future)"></span>Ahead</span>';
-  state.periods.forEach(p => { if(p._a !== undefined && p._a <= p._b) h += '<span class="li"><span class="sw" style="background:' + safeColor(p.color) + '"></span>' + esc(p.name) + '</span>'; });
+  state.periods.forEach((p, i) => {
+    const pb = d.periodBounds[i];
+    if(pb && pb.status === "ok") h += '<span class="li"><span class="sw" style="background:' + safeColor(p.color) + '"></span>' + esc(p.name) + '</span>';
+  });
   state.milestones.forEach(ms => { const dt = parseDate(ms.date); if(dt && weekIndex(d.dob, dt) >= 0 && weekIndex(d.dob, dt) < d.total)
     h += '<span class="li"><span class="dot" style="background:' + safeColor(ms.color) + '"></span>' + esc(ms.name) + '</span>'; });
   document.getElementById("legend").innerHTML = h;
@@ -411,7 +483,7 @@ function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","
 function weekFromEvent(e){
   if(!geom) return -1;
   const r = canvas.getBoundingClientRect();
-  const sx = canvas.width / (window.devicePixelRatio||1) / r.width;
+  const sx = canvas.width / geom.dpr / r.width;
   const x = (e.clientX - r.left) * sx - geom.labelW, y = (e.clientY - r.top) * sx;
   const step = geom.cell + geom.gap;
   const col = Math.floor(x / step), row = Math.floor(y / step);
@@ -422,9 +494,10 @@ function weekFromEvent(e){
 function tipHTML(d, w){
   const start = new Date(d.dob.getTime() + w * 7 * DAY);
   const end = new Date(start.getTime() + 6 * DAY);
-  const ageY = Math.floor(w / 52), ageW = w - ageY * 52; // grid years: one row is exactly 52 weeks
+  const ref = (w === d.todayW && d.today >= start && d.today <= end) ? d.today : start;
+  const age = calendarAge(d.dob, ref);
   let h = '<div class="t">Week ' + (w + 1).toLocaleString() + '</div>' +
-          '<div class="d">' + fmtDate(start) + ' – ' + fmtDate(end) + ' · age ' + ageY + 'y ' + ageW + 'w</div>';
+          '<div class="d">' + fmtDate(start) + ' – ' + fmtDate(end) + ' · age ' + age.years + 'y ' + age.weeks + 'w</div>';
   const pi = d.periodAt[w];
   if(pi >= 0) h += '<div class="lbl"><span class="sw" style="background:' + safeColor(state.periods[pi].color) + '"></span> ' + esc(state.periods[pi].name) + '</div>';
   if(d.msAt.has(w)) d.msAt.get(w).forEach(ms => {
@@ -441,6 +514,7 @@ function placeTip(tx, ty){
 }
 canvas.addEventListener("mousemove", e => {
   const d = getDerive(); if(!d) return;
+  if(kbWeek !== -1){ kbWeek = -1; draw(); }
   const w = weekFromEvent(e); if(w < 0){ tip.style.display = "none"; return; }
   tip.innerHTML = tipHTML(d, w); tip.style.display = "block";
   const r = canvas.getBoundingClientRect();
@@ -449,7 +523,6 @@ canvas.addEventListener("mousemove", e => {
 canvas.addEventListener("mouseleave", () => tip.style.display = "none");
 canvas.addEventListener("click", e => canvas.dispatchEvent(new MouseEvent("mousemove", e)));
 /* keyboard inspection: arrow keys walk the grid week by week */
-let kbWeek = -1;
 canvas.addEventListener("keydown", e => {
   const d = getDerive(); if(!d || !geom) return;
   const steps = {ArrowLeft: -1, ArrowRight: 1, ArrowUp: -geom.cols, ArrowDown: geom.cols};
@@ -457,19 +530,30 @@ canvas.addEventListener("keydown", e => {
   e.preventDefault();
   if(kbWeek < 0 || kbWeek >= d.total) kbWeek = Math.max(0, Math.min(d.todayW, d.total - 1));
   kbWeek = Math.max(0, Math.min(d.total - 1, kbWeek + steps[e.key]));
+  draw();
   tip.innerHTML = tipHTML(d, kbWeek); tip.style.display = "block";
-  placeTip(
-    canvas.offsetLeft + geom.labelW + (kbWeek % geom.cols) * (geom.cell + geom.gap),
-    canvas.offsetTop + Math.floor(kbWeek / geom.cols) * (geom.cell + geom.gap) + geom.cell + 8);
+  const r = canvas.getBoundingClientRect();
+  const scale = r.width / (canvas.width / geom.dpr);
+  const col = kbWeek % geom.cols, row = Math.floor(kbWeek / geom.cols);
+  const cellX = (geom.labelW + col * (geom.cell + geom.gap)) * scale;
+  const cellY = row * (geom.cell + geom.gap) * scale;
+  const cellH = geom.cell * scale;
+  const cellTopVP = r.top + cellY, cellBotVP = cellTopVP + cellH + 120;
+  if(cellTopVP < 24) window.scrollBy(0, cellTopVP - 48);
+  else if(cellBotVP > window.innerHeight - 16) window.scrollBy(0, cellBotVP - window.innerHeight + 32);
+  placeTip(canvas.offsetLeft + cellX, canvas.offsetTop + cellY + cellH + 8);
 });
-canvas.addEventListener("blur", () => tip.style.display = "none");
+canvas.addEventListener("blur", () => {
+  tip.style.display = "none";
+  if(kbWeek !== -1){ kbWeek = -1; draw(); }
+});
 
 /* ---------- editor ---------- */
 const dobEl = document.getElementById("dob"), expEl = document.getElementById("expectancy");
 const baselineEl = document.getElementById("baseline"), lifePanel = document.getElementById("lifePanel");
 const sexEl = document.getElementById("sexSel");
 const modeManual = document.getElementById("modeManual"), modeLife = document.getElementById("modeLife");
-dobEl.value = state.dob || ""; expEl.value = state.expectancy || 80; baselineEl.value = state.baseline || 79;
+dobEl.value = state.dob || ""; expEl.value = state.expectancy; baselineEl.value = state.baseline;
 sexEl.value = state.sex || "avg";
 dobEl.addEventListener("change", () => {
   // If the untouched example life is still loaded, its periods and milestones
@@ -479,42 +563,70 @@ dobEl.addEventListener("change", () => {
   const untouchedExample = state.dob === EXAMPLE.dob &&
     JSON.stringify(pick(state.periods, ["name", "start", "end", "color"])) === JSON.stringify(pick(EXAMPLE.periods, ["name", "start", "end", "color"])) &&
     JSON.stringify(pick(state.milestones, ["name", "date", "color"])) === JSON.stringify(pick(EXAMPLE.milestones, ["name", "date", "color"]));
-  state.dob = dobEl.value;
+  state.dob = safeDate(dobEl.value);
   if(untouchedExample && state.dob && state.dob !== EXAMPLE.dob &&
      confirm("That's the example life's timeline. Clear its periods and milestones so you start with just your own dates?")){
     state.periods = []; state.milestones = [];
   }
-  save(); draw(); buildEditors();
+  save(); applyMode(); buildEditors(); draw();
 });
-expEl.addEventListener("change", () => { state.expectancy = +expEl.value || 80; save(); draw(); });
-baselineEl.addEventListener("change", () => { state.baseline = +baselineEl.value || 79; save(); if(state.mode === "lifestyle") expEl.value = effectiveExpectancy(); updateLifeSummary(); draw(); });
-sexEl.addEventListener("change", () => { state.sex = sexEl.value; save(); if(state.mode === "lifestyle") expEl.value = effectiveExpectancy(); updateLifeSummary(); draw(); });
+expEl.addEventListener("change", () => { state.expectancy = clampNum(expEl.value, 1, 130, 80); save(); applyMode(); draw(); });
+baselineEl.addEventListener("change", () => { state.baseline = clampNum(baselineEl.value, 40, 110, 79); baselineEl.value = state.baseline; save(); applyMode(); draw(); });
+sexEl.addEventListener("change", () => { state.sex = ["avg", "female", "male"].includes(sexEl.value) ? sexEl.value : "avg"; save(); applyMode(); draw(); });
 modeManual.addEventListener("click", () => { state.mode = "manual"; save(); applyMode(); draw(); });
 modeLife.addEventListener("click", () => { state.mode = "lifestyle"; save(); applyMode(); draw(); });
 
 function fmtNum(n){ return Number.isInteger(n) ? String(n) : n.toFixed(1); }
 function updateLifeSummary(){
   if(state.mode !== "lifestyle") return;
-  const d = habitDelta(), e = effectiveExpectancy();
-  const base = (+state.baseline || 79) + sexAdjust();
-  const raw = base + d, weeks = Math.round(e * 52.18).toLocaleString();
-  // When the current-age floor raises the result past the raw arithmetic,
-  // say so — otherwise the printed equation visibly does not add up.
-  document.getElementById("lifeSummary").textContent = e > raw + 0.001
-    ? "Baseline " + fmtNum(base) + " " + (d >= 0 ? "+" : "−") + " " + Math.abs(d) + " from habits → " +
-      fmtNum(raw) + ", raised to ≈ " + fmtNum(e) + " years — the grid always extends past your current age (±5) · " + weeks + " weeks"
-    : "Baseline " + fmtNum(base) + " " + (d >= 0 ? "+" : "−") + " " + Math.abs(d) + " from habits → ≈ " +
-      fmtNum(e) + " years (±5) · " + weeks + " weeks";
+  const hb = habitBreakdown(), d = hb.total, e = effectiveExpectancy();
+  const base = clampNum(state.baseline, 40, 110, 79) + sexAdjust();
+  const raw = base + d;
+  const derived = getDerive();
+  const weeks = (derived ? derived.total : totalWeeks(e)).toLocaleString();
+  const capNote = hb.capped > 0 ? " (capped −" + fmtNum(hb.capped) + " for overlap)" : "";
+  const prefix = "Baseline " + fmtNum(base) + " " + (d >= 0 ? "+" : "−") + " " + Math.abs(d) + " from habits" + capNote + " → ";
+  const hasDob = !!parseDate(state.dob);
+  const ageFloor = hasDob ? currentAgeYears() + 1 : 1;
+  let body;
+  if(raw > 130 + 0.001){
+    body = fmtNum(raw) + ", capped at 130 years (grid maximum)";
+  } else if(hasDob && ageFloor > 130 && e > raw + 0.001){
+    body = fmtNum(raw) + ", raised to 130 years (grid maximum)";
+  } else if(e > raw + 0.001){
+    body = hasDob
+      ? fmtNum(raw) + ", raised to ≈ " + fmtNum(e) + " years — the grid always extends past your current age"
+      : fmtNum(raw) + ", raised to 1 year (grid minimum)";
+  } else {
+    body = "≈ " + fmtNum(e) + " years";
+  }
+  document.getElementById("lifeSummary").textContent = prefix + body + " (±5) · " + weeks + " weeks";
 }
 function applyMode(){
   const life = state.mode === "lifestyle";
   lifePanel.style.display = life ? "block" : "none";
-  document.getElementById("manualHint").style.display = life ? "none" : "block";
+  const manualHint = document.getElementById("manualHint");
+  manualHint.style.display = life ? "none" : "block";
   expEl.disabled = life;
   modeManual.classList.toggle("primary", !life);
   modeLife.classList.toggle("primary", life);
+  modeManual.setAttribute("aria-pressed", String(!life));
+  modeLife.setAttribute("aria-pressed", String(life));
   // the input must always show the number the grid is actually using
-  expEl.value = life ? effectiveExpectancy() : (state.expectancy || 80);
+  const eff = effectiveExpectancy();
+  expEl.value = eff;
+  if(!life){
+    const raw = clampNum(state.expectancy, 1, 130, 80);
+    const hasDob = !!parseDate(state.dob);
+    const ageFloor = hasDob ? currentAgeYears() + 1 : 1;
+    if(eff > raw + 0.001){
+      manualHint.textContent = hasDob && ageFloor > 130
+        ? "The grid runs from birth to this age (raised from " + fmtNum(raw) + " to 130, the grid maximum)."
+        : "The grid runs from birth to this age (raised from " + fmtNum(raw) + " to extend past your current age).";
+    } else {
+      manualHint.textContent = "The grid runs from birth to this age. Set it from family history, actuarial tables, or a goal.";
+    }
+  }
   updateLifeSummary();
 }
 function deltaSuffix(d){ return d ? " (≈ " + (d > 0 ? "+" : "−") + Math.abs(d) + " yrs)" : " (≈ 0)"; }
@@ -538,16 +650,42 @@ function buildFactors(){
     sel.value = state.habits[f.key];
     sel.addEventListener("change", () => {
       state.habits[f.key] = sel.value; save();
-      expEl.value = effectiveExpectancy(); updateLifeSummary(); draw();
+      applyMode(); draw();
     });
     wrap.appendChild(sel);
   }
 }
 function syncInputs(){
   normalizeState();
-  dobEl.value = state.dob || ""; expEl.value = state.expectancy || 80; baselineEl.value = state.baseline || 79;
+  dobEl.value = state.dob || ""; expEl.value = state.expectancy; baselineEl.value = state.baseline;
   sexEl.value = state.sex || "avg";
   buildEditors(); buildFactors(); applyMode(); draw();
+}
+
+function refreshOogHints(){
+  const d = getDerive();
+  document.querySelectorAll("#periods .item").forEach((div, i) => {
+    const note = div.querySelector("[data-oog]"); if(!note) return;
+    const p = state.periods[i];
+    if(!p){ note.style.display = "none"; return; }
+    const s = parseDate(p.start), e = parseDate(p.end);
+    if(s && e && s > e){
+      note.textContent = "End date is before start date, so this period will not show.";
+      note.style.display = "block";
+    } else if(d && d.periodBounds[i] && d.periodBounds[i].status === "oog"){
+      note.textContent = "Those dates fall outside the grid, so this period will not show.";
+      note.style.display = "block";
+    } else {
+      note.style.display = "none";
+    }
+  });
+  document.querySelectorAll("#milestones .item").forEach((div, i) => {
+    const note = div.querySelector("[data-oog]"); if(!note) return;
+    const m = state.milestones[i];
+    const dt = m ? parseDate(m.date) : null;
+    const oog = !!(d && dt && (weekIndex(d.dob, dt) < 0 || weekIndex(d.dob, dt) >= d.total));
+    note.style.display = oog ? "block" : "none";
+  });
 }
 
 function itemRow(kind, item, idx){
@@ -556,30 +694,26 @@ function itemRow(kind, item, idx){
     div.innerHTML =
       '<div class="row"><input type="text" aria-label="Period name" placeholder="Name — e.g. High school" value="' + esc(item.name) + '" data-k="name" style="flex:1">' +
       '<input type="color" aria-label="Period colour" value="' + safeColor(item.color) + '" data-k="color">' +
-      '<button class="ghost danger" data-del title="Remove">✕</button></div>' +
-      '<div class="row"><input type="date" aria-label="Period start" value="' + (item.start||"") + '" data-k="start"><span>→</span><input type="date" aria-label="Period end" value="' + (item.end||"") + '" data-k="end"></div>';
+      '<button class="ghost danger" data-del title="Remove" aria-label="Remove period">✕</button></div>' +
+      '<div class="row"><input type="date" aria-label="Period start" value="' + esc(item.start || "") + '" data-k="start"><span>→</span><input type="date" aria-label="Period end" value="' + esc(item.end || "") + '" data-k="end"></div>' +
+      '<div class="hint" data-oog style="display:none"></div>';
   } else {
     div.innerHTML =
       '<div class="row"><input type="text" aria-label="Milestone name" placeholder="Name — e.g. Moved to Lisbon" value="' + esc(item.name) + '" data-k="name" style="flex:1">' +
       '<input type="color" aria-label="Milestone colour" value="' + safeColor(item.color) + '" data-k="color">' +
-      '<button class="ghost danger" data-del title="Remove">✕</button></div>' +
-      '<div class="row"><input type="date" aria-label="Milestone date" value="' + (item.date||"") + '" data-k="date"></div>' +
+      '<button class="ghost danger" data-del title="Remove" aria-label="Remove milestone">✕</button></div>' +
+      '<div class="row"><input type="date" aria-label="Milestone date" value="' + esc(item.date || "") + '" data-k="date"></div>' +
       '<div class="hint" data-oog style="display:none">That date falls outside the grid, so this milestone will not show.</div>';
   }
-  const updateOog = () => {
-    const note = div.querySelector("[data-oog]"); if(!note) return;
-    const d = getDerive(), dt = parseDate(item.date);
-    const oog = !!(d && dt && (weekIndex(d.dob, dt) < 0 || weekIndex(d.dob, dt) >= d.total));
-    note.style.display = oog ? "block" : "none";
-  };
   div.querySelectorAll("input").forEach(inp => inp.addEventListener("change", () => {
-    item[inp.dataset.k] = inp.value; save(); draw(); updateOog();
+    const k = inp.dataset.k;
+    item[k] = DATE_KEYS.has(k) ? safeDate(inp.value) : (k === "color" ? safeColor(inp.value) : inp.value);
+    save(); draw();
   }));
   div.querySelector("[data-del]").addEventListener("click", () => {
     (kind === "period" ? state.periods : state.milestones).splice(idx, 1);
     save(); buildEditors(); draw();
   });
-  updateOog();
   return div;
 }
 function buildEditors(){
@@ -587,6 +721,7 @@ function buildEditors(){
   state.periods.forEach((it, i) => p.appendChild(itemRow("period", it, i)));
   const m = document.getElementById("milestones"); m.innerHTML = "";
   state.milestones.forEach((it, i) => m.appendChild(itemRow("milestone", it, i)));
+  refreshOogHints();
 }
 document.getElementById("addPeriod").addEventListener("click", () => {
   state.periods.push({name:"", start:"", end:"", color:PALETTE[state.periods.length % PALETTE.length]});
@@ -599,9 +734,7 @@ document.getElementById("addMilestone").addEventListener("click", () => {
 
 /* ---------- data buttons ---------- */
 document.getElementById("exportBtn").addEventListener("click", () => {
-  const out = JSON.parse(JSON.stringify(state));
-  out.periods.forEach(p => { delete p._a; delete p._b; }); // derived scratch, not data
-  const blob = new Blob([JSON.stringify(out, null, 2)], {type:"application/json"});
+  const blob = new Blob([JSON.stringify(state, null, 2)], {type:"application/json"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = "life-in-weeks.json"; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000); // deferred: an immediate revoke cancels the download in some WebKit builds
@@ -609,12 +742,17 @@ document.getElementById("exportBtn").addEventListener("click", () => {
 const importFile = document.getElementById("importFile");
 document.getElementById("importBtn").addEventListener("click", () => importFile.click());
 importFile.addEventListener("change", () => {
-  const f = importFile.files[0]; if(!f) return;
+  const f = importFile.files[0];
+  importFile.value = "";
+  if(!f) return;
   f.text().then(t => {
     try{
       // Validate and normalise the whole payload BEFORE it is assigned or
       // persisted — a malformed file must never reach localStorage.
-      const s = cleanState(JSON.parse(t));
+      const parsed = JSON.parse(t);
+      if(!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+         !SCHEMA_KEYS.some(k => Object.hasOwn(parsed, k))) throw 0;
+      const s = cleanState(parsed);
       if(!s) throw 0;
       state = s; save();
       syncInputs();
@@ -643,11 +781,20 @@ const sideBtn = document.getElementById("sideBtn"), layoutEl = document.querySel
 function applySidebar(collapsed){
   layoutEl.classList.toggle("collapsed", collapsed);
   sideBtn.textContent = collapsed ? "Show panel" : "Hide panel";
+  sideBtn.title = collapsed ? "Expand the sidebar" : "Collapse the sidebar";
+  sideBtn.setAttribute("aria-expanded", String(!collapsed));
   try{ localStorage.setItem("liw-sidebar", collapsed ? "1" : "0"); }catch(e){}
   requestAnimationFrame(draw);
 }
 sideBtn.addEventListener("click", () => applySidebar(!layoutEl.classList.contains("collapsed")));
-try{ if(localStorage.getItem("liw-sidebar") === "1"){ layoutEl.classList.add("collapsed"); sideBtn.textContent = "Show panel"; } }catch(e){}
+try{
+  if(localStorage.getItem("liw-sidebar") === "1"){
+    layoutEl.classList.add("collapsed");
+    sideBtn.textContent = "Show panel";
+    sideBtn.title = "Expand the sidebar";
+    sideBtn.setAttribute("aria-expanded", "false");
+  }
+}catch(e){}
 
 window.addEventListener("resize", draw);
 buildEditors();
